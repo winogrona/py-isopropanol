@@ -15,7 +15,7 @@ log = getLogger(__name__)
 
 ADDR_LEN = 2
 PTYPE_LEN = 1
-ISO_BYTEORDER: Literal["little"] = "little" # Doesn't matter at all but still
+ISO_BYTEORDER: Literal["little"] = "little"
 
 class PeerAddr(int):
     def __init__(self, value: int) -> None:
@@ -119,6 +119,7 @@ class Server:
         while True:
             log.info("Polling new posts")
             messages = await self.bot.poll_posts(self.channel_id)
+            log.info("Received polling results: %s" % messages)
 
             if len(messages) == 0:
                 continue

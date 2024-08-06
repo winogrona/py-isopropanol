@@ -6,8 +6,11 @@ from typing import Any, Literal, cast, overload, Iterable, TypeAlias
 from itertools import cycle
 from asyncio import Queue, Future
 from datetime import datetime, timedelta
+from logging import getLogger
 
 JSONAtomic: TypeAlias = dict[str, "JSONAtomic"] | list["JSONAtomic"] | str | int | float | bool | None
+
+logger = getLogger(__name__)
 
 @dataclass
 class Message:
@@ -47,6 +50,12 @@ class QueuedRequest:
     method: str
     args: dict[str, JSONAtomic] 
 
+def method_to_str(name: str, args: dict[str, JSONAtomic]) -> str:
+    return "%s(%s)" % (
+            name, 
+            ", ".join(["%s=%s" % (key, val) for key, val in args.items()])
+        )
+
 class BotController:
     tokens: list[BotToken]
 
@@ -74,6 +83,8 @@ class BotController:
         asyncio.create_task(self.queue_task())
 
     async def queue_task(self) -> None:
+        logger.info("starting the queue task")
+
         async def request_task(token: str, request: QueuedRequest) -> None:
             try:
                 result = await self.method(token, request.method, **request.args)
@@ -86,8 +97,10 @@ class BotController:
 
         while True:
             request = await self.request_queue.get()
+            logger.info("queue task: dispatching %s" % method_to_str(request.method, request.args))
             for token in cycle(self.tokens):
                 if datetime.now() - token.last_used > timedelta(seconds=self.api_ratelimit_secs):
+                    logger.info("queue task: dispatched %s on '%s'" % (method_to_str(request.method, request.args), token.key[-8:]))
                     asyncio.create_task(request_task(token.key, request))
                     token.last_used = datetime.now()
                     break
@@ -133,8 +146,14 @@ class BotController:
             method=method_name,
             args=kwargs
         )
+
+        method_str = method_to_str(method_name, kwargs)
+
+        logger.info("Queueing a new request: %s" % method_str)
         await self.request_queue.put(request)
-        return await request.future
+        result = await request.future
+        logger.info("Method %s done" % method_str)
+        return result
 
     async def send_message(self, text: str, chat_id: int) -> None:
         await self.queue_request("sendMessage", text=text, chat_id=chat_id)
