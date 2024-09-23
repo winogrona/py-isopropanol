@@ -19,11 +19,11 @@ class Message:
     chat_id: int
 
     @staticmethod
-    def from_dict(src: dict[str, Any]) -> "Message":
+    def from_dict(src: dict[str, JSONAtomic]) -> "Message":
         return Message(
-            text=src["text"],
-            id=src["message_id"],
-            chat_id=src["chat_id"]
+            text=cast(str, src["text"]),
+            id=cast(int, src["message_id"]),
+            chat_id=cast(int, src["chat"]["id"]) # type: ignore
         )
 
 
@@ -58,6 +58,7 @@ def method_to_str(name: str, args: dict[str, JSONAtomic]) -> str:
 
 class BotController:
     tokens: list[BotToken]
+    poll_token: BotToken
 
     api_host_proto: Literal["http", "https"] = "https"
     api_host = "api.telegram.org"
@@ -68,11 +69,12 @@ class BotController:
 
     request_queue: Queue[QueuedRequest]
 
-    def __init__(self, tokens: list[str]):
+    def __init__(self, tokens: list[str], poll_token: int = 0):
         self.tokens = [BotToken(
             token,
             datetime.now() - timedelta(seconds=self.api_ratelimit_secs)
         ) for token in tokens]
+        self.poll_token = self.tokens[poll_token]
         self.request_queue = Queue()
 
     @abstractmethod
@@ -117,10 +119,10 @@ class BotController:
 
         for (key, value) in kwargs.items():
             if type(value) in [dict, list, bool]:
-                args_serialized += "%s=%s" % (key, json.dumps(value))
+                args_serialized.append("%s=%s" % (key, json.dumps(value)))
 
             elif type(value) in [str, int]:
-                args_serialized += "%s=%s" % (key, value)
+                args_serialized.append("%s=%s" % (key, value))
 
         url = "%s://%s:%s/bot%s/%s?%s" % (
             self.api_host_proto,
@@ -130,7 +132,11 @@ class BotController:
             method_name,
             '&'.join(args_serialized)
         )
+        logger.debug("Requesting %s" % url)
+
         result = await self.http_get_json(url)
+
+        logger.debug("Response: %s" % result)
 
         if not result["ok"]:
             raise TelegramError(
@@ -162,7 +168,8 @@ class BotController:
         await self.queue_request("deleteMessage", chat_id=message.chat_id, message_id=message.id)
 
     async def poll_posts(self, chat_id: int) -> list[Message]:
-        res = cast(list[dict[str, JSONAtomic]], await self.queue_request(
+        res = cast(list[dict[str, JSONAtomic]], await self.method(
+            self.poll_token.key,
             "getUpdates",
             timeout=self.longpoll_timeout_secs,
             allowed_updates=["channel_post"],
@@ -173,12 +180,12 @@ class BotController:
             return []
 
         result = []
-        self.update_offset = cast(int, res[-1]["update_id"])
+        self.update_offset = cast(int, res[-1]["update_id"]) + 1
 
         for update in res:
             if "text" not in cast(dict[str, JSONAtomic], update["channel_post"]).keys():
                 continue
 
-            result.append(Message.from_dict(update["channel_post"]))
+            result.append(Message.from_dict(update["channel_post"])) # type: ignore
 
         return result

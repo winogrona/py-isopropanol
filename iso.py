@@ -10,8 +10,9 @@ from typing import Awaitable, Callable, Coroutine
 from typing_extensions import Buffer
 from abc import abstractmethod
 from logging import getLogger
+from abstract_telegram import TelegramError
 
-log = getLogger(__name__)
+logger = getLogger(__name__)
 
 ADDR_LEN = 2
 PTYPE_LEN = 1
@@ -106,9 +107,16 @@ class Server:
     BROADCASR_ADDR = PeerAddr(1)
     UNKNOWN_ADDR = PeerAddr(2)
 
+    MESSAGE_START_MAGIC = "ISO["
+    MESSAGE_END_MAGIC = "]"
+
     async def send(self, daddr: PeerAddr, payload: bytes) -> None:
         packet = Packet(saddr=Server.SERVER_ADDR, daddr=daddr, payload=payload)
-        raw = base65536.encode(self.codec.encode(packet.to_bytes()))
+        raw = "%s%s%s" % (
+            Server.MESSAGE_START_MAGIC,
+            base65536.encode(self.codec.encode(packet.to_bytes())),
+            Server.MESSAGE_END_MAGIC
+        )
         await self.bot.send_message(text=raw, chat_id=self.channel_id)
 
     def start(self) -> None:
@@ -117,27 +125,43 @@ class Server:
 
     async def listen_task(self) -> None:
         while True:
-            log.info("Polling new posts")
+            logger.info("Polling new posts")
             messages = await self.bot.poll_posts(self.channel_id)
-            log.info("Received polling results: %s" % messages)
+            logger.info("Received polling results: %s" % messages)
 
             if len(messages) == 0:
                 continue
 
             for message in messages:
+                if not message.text.startswith(Server.MESSAGE_START_MAGIC):
+                    logger.error("Received message doesn't start with START_MAGIC `%s`" % Server.MESSAGE_START_MAGIC)
+                    try:
+                        await self.bot.delete_message(message)
+                    except TelegramError as e:
+                        logger.error("Failed to delete a message: %s" % e)
+
+                    continue
+                    
+                stripped_text = message.text[len(Server.MESSAGE_START_MAGIC):-len(Server.MESSAGE_END_MAGIC)]
+                logger.debug("Stripped message text: `%s`" % stripped_text)
+
                 try:
-                    encoded_packet = base65536.decode(message.text)
+                    encoded_packet = base65536.decode(stripped_text)
 
                 except ValueError:
-                    log.error("msg_id %d contains a non-base65536 character, deleting it")
-                    await self.bot.delete_message(message)
+                    logger.error("msg_id %d contains a non-base65536 character, deleting it")
+                    try:
+                        await self.bot.delete_message(message)
+                    except TelegramError as e:
+                        logger.error("Failed to delete a message: %s" % e)
+
                     continue
 
                 try:
                     packet = Packet.from_bytes(self.codec.decode(encoded_packet))
 
                 except ValueError as e:
-                    log.error("msg_id %i: packet decoding error: %s" % (message.id, e))
+                    logger.error("msg_id %i: packet decoding error: %s" % (message.id, e))
                     await self.bot.delete_message(message)
                     continue
 
@@ -148,9 +172,9 @@ class Server:
                     await self.bot.delete_message(message)
                 
                 elif packet.daddr == Server.BROADCASR_ADDR:
-                    log.error("msg_id %i: received a cool broadcast packet but that's not implemented yet :(")
+                    logger.error("msg_id %i: received a cool broadcast packet but that's not implemented yet :(")
                     continue
 
                 else:
-                    log.error("msg_id %i: received a cool routable packet but that's not implemented yet :(")
+                    logger.error("msg_id %i: received a cool routable packet but that's not implemented yet :(")
                     continue
